@@ -2,8 +2,9 @@ local utils = require "nvim-tree.utils"
 local events = require "nvim-tree.events"
 local lib = require "nvim-tree.lib"
 local core = require "nvim-tree.core"
-local watch = require "nvim-tree.explorer.watch"
 local notify = require "nvim-tree.notify"
+
+local find_file = require("nvim-tree.actions.finders.find-file").fn
 
 local M = {}
 
@@ -41,8 +42,7 @@ local function get_num_nodes(iter)
 end
 
 local function get_containing_folder(node)
-  local is_open = M.create_in_closed_folder or node.open
-  if node.nodes ~= nil and is_open then
+  if node.nodes ~= nil then
     return utils.path_add_trailing(node.absolute_path)
   end
   local node_name_size = #(node.name or "")
@@ -99,27 +99,19 @@ function M.fn(node)
           is_error = true
           break
         end
+        events._dispatch_folder_created(new_file_path)
       end
     end
     if not is_error then
       notify.info(new_file_path .. " was properly created")
     end
-    events._dispatch_folder_created(new_file_path)
-    if M.enable_reload then
-      require("nvim-tree.actions.reloaders.reloaders").reload_explorer()
-    else
-      -- synchronous call required so that we may focus the file now
-      node = node.nodes ~= nil and node or node.parent
-      if node then
-        watch.refresh_path(node.absolute_path)
-      end
-    end
-    utils.focus_file(utils.path_remove_trailing(new_file_path))
+
+    -- synchronously refreshes as we can't wait for the watchers
+    find_file(utils.path_remove_trailing(new_file_path))
   end)
 end
 
 function M.setup(opts)
-  M.create_in_closed_folder = opts.create_in_closed_folder
   M.enable_reload = not opts.filesystem_watchers.enable
 end
 

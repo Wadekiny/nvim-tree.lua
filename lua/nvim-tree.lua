@@ -11,6 +11,7 @@ local reloaders = require "nvim-tree.actions.reloaders.reloaders"
 local copy_paste = require "nvim-tree.actions.fs.copy-paste"
 local collapse_all = require "nvim-tree.actions.tree-modifiers.collapse-all"
 local git = require "nvim-tree.git"
+local filters = require "nvim-tree.explorer.filters"
 
 local _config = {}
 
@@ -68,21 +69,6 @@ end
 ---@deprecated
 M.on_keypress = require("nvim-tree.actions.dispatch").dispatch
 
-function M.toggle(find_file, no_focus, cwd, bang)
-  if view.is_visible() then
-    view.close()
-  else
-    local previous_buf = vim.api.nvim_get_current_buf()
-    M.open(cwd)
-    if _config.update_focused_file.enable or find_file then
-      M.find_file(false, previous_buf, bang)
-    end
-    if no_focus then
-      vim.cmd "noautocmd wincmd p"
-    end
-  end
-end
-
 function M.open(cwd)
   cwd = cwd ~= "" and cwd or nil
   if view.is_visible() then
@@ -116,11 +102,11 @@ function M.open_replacing_current_buffer(cwd)
   require("nvim-tree.actions.finders.find-file").fn(bufname)
 end
 
-function M.tab_change()
+function M.tab_enter()
   if view.is_visible { any_tabpage = true } then
     local bufname = vim.api.nvim_buf_get_name(0)
     local ft = vim.api.nvim_buf_get_option(0, "ft")
-    for _, filter in ipairs(M.config.ignore_buf_on_tab_change) do
+    for _, filter in ipairs(M.config.tab.sync.ignore) do
       if bufname:match(filter) ~= nil or ft:match(filter) ~= nil then
         return
       end
@@ -142,7 +128,7 @@ local function is_file_readable(fname)
   return stat and stat.type == "file" and vim.loop.fs_access(fname, "R")
 end
 
-function M.find_file(with_open, bufnr, bang)
+local function find_file(with_open, bufnr, bang)
   if not with_open and not core.get_explorer() then
     return
   end
@@ -161,13 +147,35 @@ function M.find_file(with_open, bufnr, bang)
     M.open()
   end
 
-  -- if we don't schedule, it will search for NvimTree
-  vim.schedule(function()
-    if bang or _config.update_focused_file.update_root then
-      M.change_root(filepath, bufnr)
+  if bang or _config.update_focused_file.update_root then
+    M.change_root(filepath, bufnr)
+  end
+
+  require("nvim-tree.actions.finders.find-file").fn(filepath)
+end
+
+---@deprecated 2022/12/16
+function M.find_file(with_open, bufnr, bang)
+  vim.notify_once(
+    "require('nvim-tree').find_file is not API and will soon be unavailable. Please use api.tree.find_file as per :help nvim-tree-api",
+    vim.log.levels.WARN
+  )
+  find_file(with_open, bufnr, bang)
+end
+
+function M.toggle(with_find_file, no_focus, cwd, bang)
+  if view.is_visible() then
+    view.close()
+  else
+    local previous_buf = vim.api.nvim_get_current_buf()
+    M.open(cwd)
+    if _config.update_focused_file.enable or with_find_file then
+      find_file(false, previous_buf, bang)
     end
-    require("nvim-tree.actions.finders.find-file").fn(filepath)
-  end)
+    if no_focus then
+      vim.cmd "noautocmd wincmd p"
+    end
+  end
 end
 
 M.resize = view.resize
@@ -271,7 +279,7 @@ function M.on_enter(netrw_disabled)
     if should_focus_other_window then
       vim.cmd "noautocmd wincmd p"
       if should_find then
-        M.find_file(false)
+        find_file(false)
       end
     end
   end
@@ -305,7 +313,7 @@ local function setup_vim_commands()
   vim.api.nvim_create_user_command("NvimTreeRefresh", reloaders.reload_explorer, { bar = true })
   vim.api.nvim_create_user_command("NvimTreeClipboard", copy_paste.print_clipboard, { bar = true })
   vim.api.nvim_create_user_command("NvimTreeFindFile", function(res)
-    M.find_file(true, nil, res.bang)
+    find_file(true, nil, res.bang)
   end, { bang = true, bar = true })
   vim.api.nvim_create_user_command("NvimTreeFindFileToggle", function(res)
     M.toggle(true, false, res.args, res.bang)
@@ -323,7 +331,7 @@ function M.change_dir(name)
   change_dir.fn(name)
 
   if _config.update_focused_file.enable then
-    M.find_file(false)
+    find_file(false)
   end
 end
 
@@ -353,6 +361,30 @@ local function setup_autocommands(opts)
     create_nvim_tree_autocmd("BufWritePost", { callback = reloaders.reload_explorer })
   end
 
+  create_nvim_tree_autocmd("BufReadPost", {
+    callback = function(data)
+      -- update opened file buffers
+      if
+        (filters.config.filter_no_buffer or renderer.config.highlight_opened_files ~= "none")
+        and vim.bo[data.buf].buftype == ""
+      then
+        reloaders.reload_explorer()
+      end
+    end,
+  })
+
+  create_nvim_tree_autocmd("BufUnload", {
+    callback = function(data)
+      -- update opened file buffers
+      if
+        (filters.config.filter_no_buffer or renderer.config.highlight_opened_files ~= "none")
+        and vim.bo[data.buf].buftype == ""
+      then
+        reloaders.reload_explorer(nil, data.buf)
+      end
+    end,
+  })
+
   if not has_watchers and opts.git.enable then
     create_nvim_tree_autocmd("User", {
       pattern = { "FugitiveChanged", "NeogitStatusRefreshed" },
@@ -360,8 +392,8 @@ local function setup_autocommands(opts)
     })
   end
 
-  if opts.open_on_tab then
-    create_nvim_tree_autocmd("TabEnter", { callback = vim.schedule_wrap(M.tab_change) })
+  if opts.tab.sync.open then
+    create_nvim_tree_autocmd("TabEnter", { callback = vim.schedule_wrap(M.tab_enter) })
   end
   if opts.hijack_cursor then
     create_nvim_tree_autocmd("CursorMoved", {
@@ -383,7 +415,9 @@ local function setup_autocommands(opts)
   if opts.update_focused_file.enable then
     create_nvim_tree_autocmd("BufEnter", {
       callback = function()
-        M.find_file(false)
+        utils.debounce("BufEnter:find_file", opts.update_focused_file.debounce_delay, function()
+          find_file(false)
+        end)
       end,
     })
   end
@@ -407,9 +441,8 @@ local function setup_autocommands(opts)
     create_nvim_tree_autocmd("BufEnter", {
       pattern = "NvimTree_*",
       callback = function()
-        local bufnr = vim.api.nvim_get_current_buf()
         vim.schedule(function()
-          vim.api.nvim_buf_call(bufnr, function()
+          vim.api.nvim_buf_call(0, function()
             vim.cmd [[norm! zz]]
           end)
         end)
@@ -447,7 +480,6 @@ end
 
 local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
   auto_reload_on_write = true,
-  create_in_closed_folder = false,
   disable_netrw = false,
   hijack_cursor = false,
   hijack_netrw = true,
@@ -455,8 +487,6 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
   ignore_buffer_on_setup = false,
   open_on_setup = false,
   open_on_setup_file = false,
-  open_on_tab = false,
-  ignore_buf_on_tab_change = {},
   sort_by = "name",
   root_dirs = {},
   prefer_startup_root = false,
@@ -501,7 +531,7 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
     highlight_git = false,
     full_name = false,
     highlight_opened_files = "none",
-    root_folder_modifier = ":~",
+    root_folder_label = ":~:s?$?/..?",
     indent_width = 2,
     indent_markers = {
       enable = false,
@@ -559,6 +589,7 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
   },
   update_focused_file = {
     enable = false,
+    debounce_delay = 15,
     update_root = false,
     ignore_list = {},
   },
@@ -570,7 +601,12 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
   diagnostics = {
     enable = false,
     show_on_dirs = false,
+    show_on_open_dirs = true,
     debounce_delay = 50,
+    severity = {
+      min = vim.diagnostic.severity.HINT,
+      max = vim.diagnostic.severity.ERROR,
+    },
     icons = {
       hint = "",
       info = "",
@@ -580,6 +616,8 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
   },
   filters = {
     dotfiles = false,
+    git_clean = false,
+    no_buffer = false,
     custom = {},
     exclude = {},
   },
@@ -592,6 +630,7 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
     enable = true,
     ignore = true,
     show_on_dirs = true,
+    show_on_open_dirs = true,
     timeout = 400,
   },
   actions = {
@@ -619,6 +658,7 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
       resize_window = true,
       window_picker = {
         enable = true,
+        picker = "default",
         chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
         exclude = {
           filetype = { "notify", "packer", "qf", "diff", "fugitive", "fugitiveblame" },
@@ -637,6 +677,13 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
   live_filter = {
     prefix = "[FILTER]: ",
     always_show_folders = true,
+  },
+  tab = {
+    sync = {
+      open = false,
+      close = false,
+      ignore = {},
+    },
   },
   notify = {
     threshold = vim.log.levels.INFO,
@@ -670,6 +717,8 @@ local FIELD_OVERRIDE_TYPECHECK = {
   remove_keymaps = { boolean = true, table = true },
   on_attach = { ["function"] = true, string = true },
   sort_by = { ["function"] = true, string = true },
+  root_folder_label = { ["function"] = true, string = true },
+  picker = { ["function"] = true, string = true },
 }
 
 local function validate_options(conf)
@@ -716,8 +765,8 @@ local function validate_options(conf)
 end
 
 function M.setup(conf)
-  if vim.fn.has "nvim-0.7" == 0 then
-    vim.notify_once("nvim-tree.lua requires Neovim 0.7 or higher", vim.log.levels.WARN)
+  if vim.fn.has "nvim-0.8" == 0 then
+    vim.notify_once("nvim-tree.lua requires Neovim 0.8 or higher", vim.log.levels.WARN)
     return
   end
 
@@ -737,7 +786,6 @@ function M.setup(conf)
   _config.open_on_setup_file = opts.open_on_setup_file
   _config.ignore_buffer_on_setup = opts.ignore_buffer_on_setup
   _config.ignore_ft_on_setup = opts.ignore_ft_on_setup
-  _config.ignore_buf_on_tab_change = opts.ignore_buf_on_tab_change
   _config.hijack_directories = opts.hijack_directories
   _config.hijack_directories.enable = _config.hijack_directories.enable and netrw_disabled
 
@@ -766,20 +814,19 @@ function M.setup(conf)
   end
 
   setup_autocommands(opts)
-  require("nvim-tree.watcher").purge_watchers()
 
   if not M.setup_called then
+    -- first call to setup
     setup_vim_commands()
-  end
-
-  if M.setup_called and view.is_visible() then
-    view.close()
-    view.abandon_current_window()
-  end
-
-  if M.setup_called and core.get_explorer() ~= nil then
-    git.purge_state()
-    TreeExplorer = nil
+  else
+    -- subsequent calls to setup
+    require("nvim-tree.watcher").purge_watchers()
+    view.close_all_tabs()
+    view.abandon_all_windows()
+    if core.get_explorer() ~= nil then
+      git.purge_state()
+      TreeExplorer = nil
+    end
   end
 
   M.setup_called = true

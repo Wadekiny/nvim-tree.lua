@@ -1,4 +1,6 @@
 local Iterator = require "nvim-tree.iterators.node-iterator"
+local notify = require "nvim-tree.notify"
+local log = require "nvim-tree.log"
 
 local M = {
   debouncers = {},
@@ -266,14 +268,20 @@ function M.table_create_missing(tbl, path)
   return t
 end
 
--- Move a value from src to dst if value is nil on dst
--- @param src to copy from
--- @param src_path dot separated string of sub-tables
--- @param src_pos value pos
--- @param dst to copy to
--- @param dst_path dot separated string of sub-tables, created when missing
--- @param dst_pos value pos
-function M.move_missing_val(src, src_path, src_pos, dst, dst_path, dst_pos)
+--- Move a value from src to dst if value is nil on dst.
+--- Remove value from src
+--- @param src table to copy from
+--- @param src_path string dot separated string of sub-tables
+--- @param src_pos string value pos
+--- @param dst table to copy to
+--- @param dst_path string dot separated string of sub-tables, created when missing
+--- @param dst_pos string value pos
+--- @param remove boolean default true
+function M.move_missing_val(src, src_path, src_pos, dst, dst_path, dst_pos, remove)
+  if remove == nil then
+    remove = true
+  end
+
   local ok, err = pcall(vim.validate, {
     src = { src, "table" },
     src_path = { src_path, "string" },
@@ -281,9 +289,11 @@ function M.move_missing_val(src, src_path, src_pos, dst, dst_path, dst_pos)
     dst = { dst, "table" },
     dst_path = { dst_path, "string" },
     dst_pos = { dst_pos, "string" },
+    remove = { remove, "boolean" },
   })
   if not ok then
-    M.notify.warn("move_missing_val: " .. (err or "invalid arguments"))
+    notify.warn("move_missing_val: " .. (err or "invalid arguments"))
+    return
   end
 
   for pos in string.gmatch(src_path, "([^%.]+)%.*") do
@@ -304,7 +314,9 @@ function M.move_missing_val(src, src_path, src_pos, dst, dst_path, dst_pos)
     dst[dst_pos] = src_val
   end
 
-  src[src_pos] = nil
+  if remove then
+    src[src_pos] = nil
+  end
 end
 
 function M.format_bytes(bytes)
@@ -464,6 +476,53 @@ function M.is_nvim_tree_buf(bufnr)
     end
   end
   return false
+end
+
+---Profile a call to vim.loop.fs_scandir
+---This should be removed following resolution of #1831
+---@param path string
+---@return userdata|nil uv_fs_t
+---@return string|nil type
+---@return string|nil err (fail)
+---@return string|nil name (fail)
+function M.fs_scandir_profiled(path)
+  local pn = string.format("fs_scandir %s", path)
+  local ps = log.profile_start(pn)
+
+  local handle, err, name = vim.loop.fs_scandir(path)
+
+  if err or name then
+    log.line("profile", "      %s err     '%s'", pn, vim.inspect(err))
+    log.line("profile", "      %s name    '%s'", pn, vim.inspect(name))
+  end
+
+  log.profile_end(ps, pn)
+
+  return handle, err, name
+end
+
+---Profile a call to vim.loop.fs_scandir_next
+---This should be removed following resolution of #1831
+---@param handle userdata uv_fs_t
+---@param tag string arbitrary
+---@return string|nil name
+---@return string|nil type
+---@return string|nil err (fail)
+---@return string|nil name (fail)
+function M.fs_scandir_next_profiled(handle, tag)
+  local pn = string.format("fs_scandir_next %s", tag)
+  local ps = log.profile_start(pn)
+
+  local n, t, err, name = vim.loop.fs_scandir_next(handle)
+
+  if err or name then
+    log.line("profile", "      %s err  '%s'", pn, vim.inspect(err))
+    log.line("profile", "      %s name '%s'", pn, vim.inspect(name))
+  end
+
+  log.profile_end(ps, pn)
+
+  return n, t, err, name
 end
 
 return M

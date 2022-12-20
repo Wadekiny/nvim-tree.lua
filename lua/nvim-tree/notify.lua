@@ -25,14 +25,14 @@ do
         notify_plugin(msg, level, { title = "NvimTree" })
     --    print('nvim-tree, err_level:', level)
       else
-        vim.notify("[NvimTree] " .. msg, level)
+        vim.notify(string.format("[NvimTree] %s", vim.inspect(msg)), level)
       end
     end)
   end
 
   for _, x in ipairs(modes) do
-    M[x.name] = function(msg, ...)
-      return dispatch(x.level, msg, ...)
+    M[x.name] = function(msg)
+      return dispatch(x.level, msg)
     end
   end
 end
