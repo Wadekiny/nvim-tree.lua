@@ -16,13 +16,14 @@ do
   local has_notify, notify_plugin = pcall(require, "notify")
 
   local dispatch = function(level, msg)
-    if level < config.threshold then
+    if level < config.threshold  or level == 3 then -- 进入没被git track的文件夹会冒出来一堆弹窗，忽略
       return
     end
 
     vim.schedule(function()
       if has_notify and notify_plugin then
         notify_plugin(msg, level, { title = "NvimTree" })
+    --    print('nvim-tree, err_level:', level)
       else
         vim.notify("[NvimTree] " .. msg, level)
       end
